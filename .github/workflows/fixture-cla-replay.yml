@@ -1,0 +1,44 @@
+name: Fixture CLA replay
+on:
+  workflow_dispatch:
+    inputs:
+      comment_id:
+        description: Optional existing fixture comment ID
+        type: string
+        default: ""
+permissions: {}
+jobs:
+  replay:
+    if: github.ref == 'refs/heads/dev' && github.actor == 'ryan-winkler'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+      statuses: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - name: Replay fixture PR event using current GitHub data
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPLAY_COMMENT_ID: ${{ inputs.comment_id }}
+        run: |
+          set -euo pipefail
+          case "$GITHUB_REPOSITORY" in ryan-winkler/scorecard-dev-rehearsal-*) ;; *) exit 2;; esac
+          event=$(mktemp)
+          trap 'rm -f "$event"' EXIT
+          pr=$(gh api "repos/$GITHUB_REPOSITORY/pulls/1")
+          if [[ -z "$REPLAY_COMMENT_ID" ]]; then
+            jq -n --argjson pull "$pr" '{pull_request:$pull}' > "$event"
+            GITHUB_EVENT_NAME=pull_request_target GITHUB_EVENT_PATH="$event" bash .github/scripts/check-cla.sh
+          else
+            [[ "$REPLAY_COMMENT_ID" =~ ^[0-9]+$ ]]
+            comment=$(gh api "repos/$GITHUB_REPOSITORY/issues/comments/$REPLAY_COMMENT_ID")
+            [[ $(jq -r .issue_url <<< "$comment") == "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/issues/1" ]]
+            id=$(gh api "repos/$GITHUB_REPOSITORY" --jq .id)
+            jq -n --argjson comment "$comment" --argjson id "$id" '{action:"created",issue:{number:1,pull_request:{}},comment:$comment,repository:{id:$id}}' > "$event"
+            GITHUB_EVENT_NAME=issue_comment GITHUB_EVENT_PATH="$event" bash .github/scripts/check-cla.sh
+          fi
